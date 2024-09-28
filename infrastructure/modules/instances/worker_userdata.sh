@@ -30,6 +30,11 @@ GRAFANA_PASSWD="${grafana_passwd}"
 CERT_ARN="${cert_arn}"
 DOMAIN="${domain}"
 DNS_ROLE_ARN="${dns_role_arn}"
+KARPENTER_VERSION="0.37.0"
+KARPENTER_CONTROLLER_ROLE_ARN="${karpenter_controller_role_arn}"
+KARPENTER_INSTANCE_ROLE_ARN="${karpenter_instance_role_arn}"
+AMI_ID="${ami_id}"
+IP_ADDR="$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)"
 
 log "Starting Kubernetes $NODE_TYPE node setup"
 
@@ -98,6 +103,161 @@ setup_worker() {
         log "Error: Failed to retrieve kubeconfig from SSM Parameter Store"
         return 1
     fi
+ 
+    log "Installing cert manager"
+    kubectl create -f https://github.com/cert-manager/cert-manager/releases/download/v1.15.3/cert-manager.yaml
+
+    log "Waiting for cert-manager pods to be ready"
+    kubectl wait --for=condition=Ready pods --all -n cert-manager --timeout=300s
+
+    log "Verifying cert-manager webhook"
+    # Retry mechanism for webhook verification
+    max_attempts=5
+    attempt=1
+    while [ $attempt -le $max_attempts ]; do
+        if kubectl get validatingwebhookconfigurations cert-manager-webhook -o jsonpath='{.webhooks[0].clientConfig.service.name}' | grep -q "cert-manager-webhook"; then
+            log "Cert-manager webhook is verified and ready"
+            break
+        fi
+        log "Attempt $attempt: Cert-manager webhook not ready yet, waiting 30 seconds..."
+        sleep 30
+        attempt=$((attempt+1))
+    done
+
+    if [ $attempt -gt $max_attempts ]; then
+        log "Error: Cert-manager webhook not ready after $max_attempts attempts"
+        return 1
+    fi
+
+    log "cert-manager is ready. Installing aws-pod-identity-webhook"
+    kubectl create -f https://raw.githubusercontent.com/aws/amazon-eks-pod-identity-webhook/refs/heads/master/deploy/auth.yaml
+    kubectl create -f https://raw.githubusercontent.com/aws/amazon-eks-pod-identity-webhook/refs/heads/master/deploy/service.yaml
+    kubectl create -f https://raw.githubusercontent.com/aws/amazon-eks-pod-identity-webhook/refs/heads/master/deploy/mutatingwebhook.yaml
+    curl -o deployment.yaml https://raw.githubusercontent.com/aws/amazon-eks-pod-identity-webhook/refs/heads/master/deploy/deployment-base.yaml
+    sed -i 's|IMAGE|amazon/amazon-eks-pod-identity-webhook:v0.5.7|' deployment.yaml
+    kubectl apply -f deployment.yaml
+
+    log "Waiting for pod identity pods to be ready"
+    kubectl wait --for=condition=Ready pods --all --timeout=300s
+    log "aws-pod-identity-webhook installation completed"
+
+    log "Setting up Karpenter"
+    helm install karpenter oci://public.ecr.aws/karpenter/karpenter --version $KARPENTER_VERSION --namespace karpenter --create-namespace \
+         --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=$KARPENTER_CONTROLLER_ROLE_ARN \
+         --set settings.clusterName=$CLUSTER_NAME \
+         --set settings.clusterEndpoint="https://$IP_ADDR:6443" \
+         --wait
+
+    cat <<EOF > karpenter-node-config.yaml
+apiVersion: karpenter.sh/v1beta1
+kind: NodePool
+metadata:
+  name: default
+spec:
+  template:
+    spec:
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: kubernetes.io/os
+          operator: In
+          values: ["linux"]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["t"]
+        - key: karpenter.k8s.aws/instance-generation
+          operator: In
+          values: ["2", "3"]
+        - key: "karpenter.k8s.aws/instance-size"
+          operator: NotIn
+          values: [nano, micro, small, large,  xlarge, 2xlarge]
+      nodeClassRef:
+        apiVersion: karpenter.k8s.aws/v1beta1
+        kind: EC2NodeClass
+        name: default
+---
+apiVersion: karpenter.k8s.aws/v1beta1
+kind: EC2NodeClass
+metadata:
+  name: default
+spec:
+  amiFamily: Custom
+  role: $KARPENTER_INSTANCE_ROLE_ARN 
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "$CLUSTER_NAME" 
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "$CLUSTER_NAME"
+  amiSelectorTerms:
+    - id: "$AMI_ID"
+  userData: |
+    MIME-Version: 1.0
+    Content-Type: multipart/mixed; boundary="BOUNDARY"
+
+    --BOUNDARY
+    Content-Type: text/x-shellscript; charset="us-ascii"
+
+    #!/bin/bash
+    K8S_VERSION="1.31"
+    REGION="\$(curl -s http://169.254.169.254/latest/meta-data/placement/region)"
+    HOSTNAME="\$(curl -s http://169.254.169.254/latest/meta-data/local-hostname)"
+    INSTANCE_ID="\$(curl -s http://169.254.169.254/latest/meta-data/instance-id)"
+
+    log "Fetching the setup_common script from Parameter Store"
+    log "Installing AWS CLI"
+    sudo apt update
+    sudo apt-get install -y awscli
+
+    aws ssm get-parameter --name "/scripts/setup_common" --with-decryption --query "Parameter.Value" --output text --region $REGION
+
+    setup_common
+
+    log "Retrieving join command from Parameter Store"
+    max_attempts=5
+    attempt=1
+    while [ $attempt -le $max_attempts ]; do
+        JOIN_COMMAND=$(aws ssm get-parameter \
+            --name "/k8s/join-command" \
+            --with-decryption \
+            --query "Parameter.Value" \
+            --output text \
+            --region $REGION)
+
+        if [ -n "$JOIN_COMMAND" ] && [ "$JOIN_COMMAND" != "placeholder" ]; then
+            log "Join command retrieved successfully"
+            break
+        fi
+
+        log "Attempt $attempt: Failed to retrieve valid join command, retrying in 30 seconds..."
+        sleep 30
+        attempt=$((attempt+1))
+    done
+
+    if [ $attempt -gt $max_attempts ]; then
+        log "Error: Failed to retrieve valid join command after $max_attempts attempts"
+        return 1
+    fi
+
+    log "Joining the Kubernetes cluster"
+    if ! sudo $JOIN_COMMAND; then
+        log "Error: Failed to join the Kubernetes cluster"
+        return 1
+    fi
+
+    log "Successfully joined the Kubernetes cluster"
+
+    log "Update providerID"
+    kubectl patch node \$HOSTNAME -p "{\"spec\":{\"providerID\":\"aws://\$REGION/\$INSTANCE_ID\"}}"
+    --BOUNDARY
+EOF
+
+    kubectl apply -f karpenter-node-config.yaml
+    log "Karpenter setup successfully"
 
     log "Update providerID"
     kubectl patch node $HOSTNAME -p "{\"spec\":{\"providerID\":\"aws://$REGION/$INSTANCE_ID\"}}"
@@ -272,6 +432,12 @@ export GRAFANA_PASSWD="$GRAFANA_PASSWD"
 export CERT_ARN="$CERT_ARN"
 export DOMAIN="$DOMAIN"
 export DNS_ROLE_ARN="$DNS_ROLE_ARN"
+export KARPENTER_VERSION="$KARPENTER_VERSION"
+export KARPENTER_CONTROLLER_ROLE_ARN="$KARPENTER_CONTROLLER_ROLE_ARN"
+export KARPENTER_INSTANCE_ROLE_ARN="$KARPENTER_INSTANCE_ROLE_ARN"
+export AMI_ID="$AMI_ID"
+export CLUSTER_NAME="$CLUSTER_NAME"
+export IP_ADDR="$IP_ADDR"
 $(declare -f log setup_worker)
 setup_worker
 EOF
