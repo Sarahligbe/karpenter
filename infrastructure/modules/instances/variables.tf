@@ -80,3 +80,13 @@ variable "dns_role_arn" {
   description = "external dns role arn"
   type = string
 }
+
+variable "karpenter_controller_role_arn" {
+  description = "karpenter controller role arn"
+  type = string
+}
+
+variable "karpenter_instance_role_arn" {
+  description = "karpenter instance role arn"
+  type = string
+}

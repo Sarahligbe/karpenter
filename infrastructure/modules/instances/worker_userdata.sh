@@ -34,6 +34,7 @@ DNS_ROLE_ARN="${dns_role_arn}"
 log "Starting Kubernetes $NODE_TYPE node setup"
 
 log "Installing AWS CLI"
+sudo apt update
 sudo apt-get install -y awscli
 
 log "Fetching the setup_common script from Parameter Store"

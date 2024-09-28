@@ -686,7 +686,7 @@ resource "aws_iam_policy" "karpenter_controller" {
   })
 }
 
-resource "aws_iam_role" "karpenter_controller" {
+resource "aws_iam_role" "karpenter_controller_role" {
   name = "KarpenterControllerRole"
 
   assume_role_policy = jsonencode({
@@ -711,6 +711,6 @@ resource "aws_iam_role" "karpenter_controller" {
 }
 
 resource "aws_iam_role_policy_attachment" "karpenter_controller_attach" {
-  role       = aws_iam_role.karpenter_controller.name
+  role       = aws_iam_role.karpenter_controller_role.name
   policy_arn = aws_iam_policy.karpenter_controller.arn
 }

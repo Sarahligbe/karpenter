@@ -96,3 +96,10 @@ resource "aws_iam_openid_connect_provider" "main" {
 #    command = "rm -rf ${path.module}/keys"
 #  }
 #}
+
+resource "terraform_data" "cleanup_keys" {
+  provisioner "local-exec" {
+    when    = destroy
+    command = "rm -rf ${path.module}/keys"
+  }
+}

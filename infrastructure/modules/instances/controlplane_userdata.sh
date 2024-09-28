@@ -29,10 +29,11 @@ KARPENTER_VERSION="0.37.0"
 KARPENTER_CONTROLLER_ROLE_ARN="${karpenter_controller_role_arn}"
 KARPENTER_INSTANCE_ROLE_ARN="${karpenter_instance_role_arn}"
 AMI_ID="${ami_id}"
-
+IP_ADDR="$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)"
 log "Starting Kubernetes $NODE_TYPE node setup"
 
 log "Installing AWS CLI"
+sudo apt update
 sudo apt-get install -y awscli
 
 log "Fetching the setup_common script from Parameter Store"
@@ -165,10 +166,10 @@ EOF
     log "aws-pod-identity-webhook installation completed"
 
     log "Setting up Karpenter"
-    helm install karpenter oci://public.ecr.aws/karpenter/karpenter --version $KARPENTER_VERSION --namespace karpenter \
+    helm install karpenter oci://public.ecr.aws/karpenter/karpenter --version $KARPENTER_VERSION --namespace karpenter --create-namespace \
          --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=$KARPENTER_CONTROLLER_ROLE_ARN \
          --set settings.aws.clusterName=$CLUSTER_NAME \
-         --set settings.aws.clusterEndpoint="$HOSTNAME:6443" \
+         --set settings.aws.clusterEndpoint="$IP_ADDR:6443" \
          --set settings.aws.defaultInstanceProfile=$KARPENTER_INSTANCE_ROLE_ARN \
          --wait
 
@@ -228,18 +229,16 @@ spec:
 
     #!/bin/bash
     K8S_VERSION="1.31"
-    REGION="$(curl -s http://169.254.169.254/latest/meta-data/placement/region)"
-    HOSTNAME="$(curl -s http://169.254.169.254/latest/meta-data/local-hostname)"
-    INSTANCE_ID="$(curl -s http://169.254.169.254/latest/meta-data/instance-id)"
+    REGION="\$(curl -s http://169.254.169.254/latest/meta-data/placement/region)"
+    HOSTNAME="\$(curl -s http://169.254.169.254/latest/meta-data/local-hostname)"
+    INSTANCE_ID="\$(curl -s http://169.254.169.254/latest/meta-data/instance-id)"
 
     log "Fetching the setup_common script from Parameter Store"
     log "Installing AWS CLI"
+    sudo apt update
     sudo apt-get install -y awscli
 
-    setup_common_script=$(aws ssm get-parameter --name "/scripts/setup_common" --with-decryption --query "Parameter.Value" --output text --region $REGION)
-
-    echo "$setup_common_script" > /tmp/setup_common.sh
-    source /tmp/setup_common.sh
+    aws ssm get-parameter --name "/scripts/setup_common" --with-decryption --query "Parameter.Value" --output text --region $REGION
 
     setup_common
 
@@ -276,6 +275,9 @@ spec:
     fi
 
     log "Successfully joined the Kubernetes cluster"
+
+    log "Update providerID"
+    kubectl patch node \$HOSTNAME -p "{\"spec\":{\"providerID\":\"aws://\$REGION/\$INSTANCE_ID\"}}"
     --BOUNDARY
 EOF
 
@@ -304,6 +306,8 @@ export KARPENTER_VERSION="$KARPENTER_VERSION"
 export KARPENTER_CONTROLLER_ROLE_ARN="$KARPENTER_CONTROLLER_ROLE_ARN"
 export KARPENTER_INSTANCE_ROLE_ARN="$KARPENTER_INSTANCE_ROLE_ARN"
 export AMI_ID="$AMI_ID"
+export CLUSTER_NAME="$CLUSTER_NAME"
+export IP_ADDR="$IP_ADDR"
 $(declare -f log setup_controlplane)
 setup_controlplane
 EOF
