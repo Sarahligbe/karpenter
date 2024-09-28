@@ -185,8 +185,8 @@ kind: EC2NodeClass
 metadata:
   name: default
 spec:
-  amiFamily: Custom
-  role: $KARPENTER_INSTANCE_ROLE_ARN 
+  amiFamily: Ubuntu
+  role: "KarpenterWorkerRole" 
   subnetSelectorTerms:
     - tags:
         karpenter.sh/discovery: "$CLUSTER_NAME" 
