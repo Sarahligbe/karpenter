@@ -1,0 +1,38 @@
+global:
+  ingress:
+    annotations:
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: 'instance'
+      alb.ingress.kubernetes.io/group.name: bird-alb
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+      alb.ingress.kubernetes.io/ssl-redirect: "443"
+
+bird:
+  enabled: true
+  name: bird
+  service:
+    type: NodePort
+    port: 4201
+  ingress:
+    enabled: true
+    className: "alb"
+    annotations: {}
+    host: ""
+    path: /
+    pathType: Prefix
+    tls: []
+
+birdimage:
+  enabled: true
+  name: birdimage
+  service:
+    type: NodePort
+    port: 4200
+  ingress:
+    enabled: true
+    className: "alb"
+    annotations: {}
+    host: ""
+    path: /
+    pathType: Prefix
+    tls: []

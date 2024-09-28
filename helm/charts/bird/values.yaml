@@ -1,0 +1,48 @@
+replicaCount: 1
+
+namespace: birdapp
+
+name: bird
+
+image:
+  repository: sayaligbe/bird
+  pullPolicy: Always
+  tag: "v1.0.1"
+
+nameOverride: ""
+fullnameOverride: ""
+
+service:
+  type: ClusterIP
+  port: 4201
+
+resources:
+  limits:
+    cpu: 100m
+    memory: 128Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+podSecurityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+securityContext:
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+
+env:
+  - name: BIRDIMAGE_URL
+    value: "http://birdimage-svc.helm.svc.cluster.local:4200"
