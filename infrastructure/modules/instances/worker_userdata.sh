@@ -142,7 +142,7 @@ setup_worker() {
     log "aws-pod-identity-webhook installation completed"
 
     log "Setting up Karpenter"
-    helm install karpenter oci://public.ecr.aws/karpenter/karpenter --version $KARPENTER_VERSION --namespace karpenter --create-namespace \
+    helm install karpenter oci://public.ecr.aws/karpenter/karpenter --version $KARPENTER_VERSION --namespace kube-system \
          --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=$KARPENTER_CONTROLLER_ROLE_ARN \
          --set settings.clusterName=$CLUSTER_NAME \
          --set settings.clusterEndpoint="https://$IP_ADDR:6443" \
@@ -174,11 +174,17 @@ spec:
           values: ["2", "3"]
         - key: "karpenter.k8s.aws/instance-size"
           operator: NotIn
-          values: [nano, micro, small, large,  xlarge, 2xlarge]
+          values: [nano, micro, small, xlarge, 2xlarge]
       nodeClassRef:
         apiVersion: karpenter.k8s.aws/v1beta1
         kind: EC2NodeClass
         name: default
+      expireAfter: 720h
+  limits:
+    cpu: 50
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 2m
 ---
 apiVersion: karpenter.k8s.aws/v1beta1
 kind: EC2NodeClass
@@ -187,6 +193,8 @@ metadata:
 spec:
   amiFamily: Ubuntu
   role: "KarpenterWorkerRole" 
+  tags:
+    karpenter.sh/discovery: "$CLUSTER_NAME" 
   subnetSelectorTerms:
     - tags:
         karpenter.sh/discovery: "$CLUSTER_NAME" 
@@ -208,13 +216,17 @@ spec:
     HOSTNAME="\$(curl -s http://169.254.169.254/latest/meta-data/local-hostname)"
     INSTANCE_ID="\$(curl -s http://169.254.169.254/latest/meta-data/instance-id)"
 
+    log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+    }
+
     log "Fetching the setup_common script from Parameter Store"
     log "Installing AWS CLI"
     sudo apt update
     sudo apt-get install -y awscli
 
-    aws ssm get-parameter --name "/scripts/setup_common" --with-decryption --query "Parameter.Value" --output text --region $REGION
-
+    aws ssm get-parameter --name "/scripts/setup_common" --with-decryption --query "Parameter.Value" --output text --region $REGION > /tmp/setup_common.sh
+    source /tmp/setup_common.sh
     setup_common
 
     log "Retrieving join command from Parameter Store"

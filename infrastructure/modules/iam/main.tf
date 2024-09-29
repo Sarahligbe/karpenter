@@ -700,7 +700,7 @@ resource "aws_iam_role" "karpenter_controller_role" {
         }
         "Condition": {
            "StringEquals": {
-              "${var.oidc_provider}:sub": "system:serviceaccount:karpenter:karpenter",
+              "${var.oidc_provider}:sub": "system:serviceaccount:kube-system:karpenter",
               "${var.oidc_provider}:aud": "sts.amazonaws.com"
             }
         }
