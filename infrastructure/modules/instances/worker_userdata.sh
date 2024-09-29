@@ -43,9 +43,8 @@ sudo apt update
 sudo apt-get install -y awscli
 
 log "Fetching the setup_common script from Parameter Store"
-setup_common_script=$(aws ssm get-parameter --name "/scripts/setup_common" --with-decryption --query "Parameter.Value" --output text --region $REGION)
+aws ssm get-parameter --name "/scripts/setup_common" --with-decryption --query "Parameter.Value" --output text --region $REGION > /tmp/setup_common.sh
 
-echo "$setup_common_script" > /tmp/setup_common.sh
 source /tmp/setup_common.sh
 
 setup_worker() {
@@ -138,7 +137,7 @@ setup_worker() {
     kubectl apply -f deployment.yaml
 
     log "Waiting for pod identity pods to be ready"
-    kubectl wait --for=condition=Ready pods --all --timeout=300s
+    kubectl wait --for=condition=Available deployment/pod-identity-webhook --timeout=300s
     log "aws-pod-identity-webhook installation completed"
 
     log "Setting up Karpenter"
@@ -179,12 +178,11 @@ spec:
         apiVersion: karpenter.k8s.aws/v1beta1
         kind: EC2NodeClass
         name: default
-      expireAfter: 720h
   limits:
     cpu: 50
   disruption:
-    consolidationPolicy: WhenEmptyOrUnderutilized
-    consolidateAfter: 2m
+    consolidationPolicy: WhenUnderutilized
+    expireAfter: 720h
 ---
 apiVersion: karpenter.k8s.aws/v1beta1
 kind: EC2NodeClass
@@ -194,7 +192,7 @@ spec:
   amiFamily: Ubuntu
   role: "KarpenterWorkerRole" 
   tags:
-    karpenter.sh/discovery: "$CLUSTER_NAME" 
+    Name: "karpenter-provisioned"
   subnetSelectorTerms:
     - tags:
         karpenter.sh/discovery: "$CLUSTER_NAME" 
@@ -262,9 +260,6 @@ spec:
     fi
 
     log "Successfully joined the Kubernetes cluster"
-
-    log "Update providerID"
-    kubectl patch node \$HOSTNAME -p "{\"spec\":{\"providerID\":\"aws://\$REGION/\$INSTANCE_ID\"}}"
     --BOUNDARY
 EOF
 
